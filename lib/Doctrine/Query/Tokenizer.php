@@ -299,6 +299,12 @@ class Doctrine_Query_Tokenizer
      */
     private function getSplitRegExpFromArray(array $d)
     {
+        static $memo = array();
+        $memoKey = implode("\0", $d);
+        if (isset($memo[$memoKey])) {
+            return $memo[$memoKey];
+        }
+
         foreach ($d as $key => $string) {
             $escapedString = preg_quote($string);
             if (preg_match('#^\w+$#', $string)) {
@@ -311,7 +317,7 @@ class Doctrine_Query_Tokenizer
             $d[] = '\s';
         }
 
-        return '#(' . implode('|', $d) . ')#';
+        return $memo[$memoKey] = '#(' . implode('|', $d) . ')#';
     }
 
     /**
@@ -513,11 +519,15 @@ class Doctrine_Query_Tokenizer
     public function quotedStringExplode($str)
     {
         // Split by all possible incarnations of a quote
-        $split = array("\\'","''","'", "\\\"", "\"\"", "\"");
-        foreach ($split as &$v) {
-            $v = preg_quote($v);
+        static $split = null;
+        if ($split === null) {
+            $split = array("\\'","''","'", "\\\"", "\"\"", "\"");
+            foreach ($split as &$v) {
+                $v = preg_quote($v);
+            }
+            unset($v);
+            $split = '#(' . implode('|', $split) . ')#';
         }
-        $split = '#(' . implode('|', $split) . ')#';
         $str = preg_split($split, $str, -1, PREG_SPLIT_DELIM_CAPTURE);
 
         $parts = array();
