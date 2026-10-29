@@ -2039,6 +2039,30 @@ class Doctrine_Query extends Doctrine_Query_Abstract implements Countable
      */
     public function getCountSqlQuery()
     {
+        if ($this->_queryCache === false
+                || ! ($this->_queryCache || $this->_conn->getAttribute(Doctrine_Core::ATTR_QUERY_CACHE))) {
+            return $this->_buildCountSqlQuery();
+        }
+
+        // Callbacks run first: the join conditions they add are part of the hash.
+        $this->_preQuery();
+        $driver = $this->getQueryCacheDriver();
+        $hash = $this->calculateQueryCacheHash() . '_count';
+        $q = $driver->fetch($hash);
+        if ($q === false) {
+            $q = $this->_buildCountSqlQuery();
+            $driver->save($hash, $q, $this->getQueryCacheLifeSpan());
+        }
+
+        return $q;
+    }
+
+    /**
+     * @see getCountSqlQuery()
+     * @return string
+     */
+    protected function _buildCountSqlQuery()
+    {
         // triggers dql parsing/processing
         $this->getSqlQuery(array(), false); // this is ugly
 

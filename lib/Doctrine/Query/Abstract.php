@@ -922,11 +922,33 @@ abstract class Doctrine_Query_Abstract
      *
      * @return string    the hash
      */
-    public function calculateQueryCacheHash()
+    public function calculateQueryCacheHash($params = array())
     {
         $dql = $this->getDql();
-        $hash = md5($dql . var_export($this->_pendingJoinConditions, true) . 'DOCTRINE_QUERY_CACHE_SALT');
+        // Everything besides the DQL that the built SQL depends on. Graph hydrators add the primary key to the
+        // selected fields and scalar ones do not, so the hydration mode is part of it.
+        $hash = md5($dql . var_export($this->_pendingJoinConditions, true) . $this->_getParamShape($params)
+            . '|' . $this->_hydrator->getHydrationMode() . '|' . (int) $this->disableLimitSubquery . '|' . get_class($this)
+            . 'DOCTRINE_QUERY_CACHE_SALT');
         return $hash;
+    }
+
+    /**
+     * The array lengths among the params the SQL is built with. `x IN ?` bound to an array gets one placeholder per
+     * element when the SQL is built, so SQL cached for one length must never serve another.
+     *
+     * @param array $params execution params
+     * @return string
+     */
+    protected function _getParamShape($params = array())
+    {
+        $shape = '';
+        $all = array_merge((array) $params, $this->_params['join'], $this->_params['set'],
+            $this->_params['where'], $this->_params['having']);
+        foreach ($all as $param) {
+            $shape .= is_array($param) ? count($param) . ',' : '.';
+        }
+        return $shape;
     }
 
     /**
@@ -985,7 +1007,7 @@ abstract class Doctrine_Query_Abstract
         if ( ! $this->_view) {
             if ($this->_queryCache !== false && ($this->_queryCache || $this->_conn->getAttribute(Doctrine_Core::ATTR_QUERY_CACHE))) {
                 $queryCacheDriver = $this->getQueryCacheDriver();
-                $hash = $this->calculateQueryCacheHash();
+                $hash = $this->calculateQueryCacheHash($params);
                 $cached = $queryCacheDriver->fetch($hash);
 
                 // If we have a cached query...
