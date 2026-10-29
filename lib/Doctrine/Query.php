@@ -2184,6 +2184,89 @@ class Doctrine_Query extends Doctrine_Query_Abstract implements Countable
     }
 
     /**
+     * Callbacks need only the components a query declares, not its SQL. For a SELECT whose FROM part declares all
+     * of them, parse FROM alone on the copy; otherwise build the whole statement as before.
+     *
+     * @param  array $params
+     * @return array $components
+     */
+    protected function _getDqlCallbackComponents($params = array())
+    {
+        if ($this->_type !== self::SELECT) {
+            return parent::_getDqlCallbackComponents($params);
+        }
+
+        $componentsBefore = array();
+        if ($this->isSubquery()) {
+            $componentsBefore = $this->getQueryComponents();
+        }
+
+        // The same reset buildSqlQuery() does before it processes FROM.
+        $copy = $this->copy();
+        if ( ! $copy->isSubquery()) {
+            $copy->_queryComponents = array();
+            $copy->_pendingAggregates = array();
+            $copy->_aggregateAliasMap = array();
+        }
+        $copy->reset();
+        $copy->_processDqlQueryPart('from', $copy->_dqlParts['from']);
+        $componentsAfter = $copy->getQueryComponents();
+        $copy->free();
+
+        if ( ! $this->_declaresAllComponents($componentsAfter)) {
+            return parent::_getDqlCallbackComponents($params);
+        }
+
+        $this->_rootAlias = key(array_diff_key($componentsAfter, $componentsBefore));
+
+        if ($componentsBefore !== $componentsAfter) {
+            return Doctrine_Lib::arrayDiffSimple($componentsAfter, $componentsBefore);
+        } else {
+            return $componentsAfter;
+        }
+    }
+
+    /**
+     * Whether $components, those the FROM part declares, are all that building this query would declare. Other
+     * parts load a component for each dotted path whose prefix is not an alias yet (an implicit join), and every
+     * subquery, which starts with SELECT or FROM, adds its own to the shared list. Coarse on purpose: a wrong
+     * "no" only costs the full build.
+     *
+     * @param  array $components
+     * @return bool
+     */
+    protected function _declaresAllComponents(array $components)
+    {
+        $dql = array();
+        foreach ($this->_dqlParts as $name => $parts) {
+            foreach ((array) $parts as $part) {
+                if (is_string($part)) {
+                    $dql[$name === 'from' ? 'from' : 'rest'][] = $part;
+                }
+            }
+        }
+        foreach ($this->_pendingJoinConditions as $conditions) {
+            foreach ($conditions as $condition) {
+                $dql['rest'][] = $condition;
+            }
+        }
+        $rest = isset($dql['rest']) ? implode(' ', $dql['rest']) : '';
+        $all = $rest . ' ' . (isset($dql['from']) ? implode(' ', $dql['from']) : '');
+
+        if (preg_match('/\b(?:select|from)\b/i', $all)) {
+            return false;
+        }
+        preg_match_all('/[A-Za-z_]\w*(?:\.(?:[A-Za-z_]\w*|\*))+/', $rest, $paths);
+        foreach ($paths[0] as $path) {
+            if ( ! isset($components[substr($path, 0, strrpos($path, '.'))])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * Copies a Doctrine_Query object.
      *
      * @return Doctrine_Query  Copy of the Doctrine_Query instance.
