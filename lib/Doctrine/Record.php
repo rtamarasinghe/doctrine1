@@ -174,6 +174,15 @@ abstract class Doctrine_Record extends Doctrine_Record_Abstract implements Count
     protected static $_customMutators = array();
 
     /**
+     * Class => field name => true where ATTR_AUTO_ACCESSOR_OVERRIDE found no get<Field>() / set<Field>() method.
+     * Classes cannot gain methods, so a miss stays a miss; hits are kept in the custom accessor/mutator caches.
+     *
+     * @var array
+     */
+    protected static $_noAutoAccessor = array();
+    protected static $_noAutoMutator = array();
+
+    /**
      * Whether or not to serialize references when a Doctrine_Record is serialized
      *
      * @var boolean
@@ -1354,17 +1363,18 @@ abstract class Doctrine_Record extends Doctrine_Record_Abstract implements Count
      */
     public function get($fieldName, $load = true)
     {
-        if ($this->_table->getAttribute(Doctrine_Core::ATTR_AUTO_ACCESSOR_OVERRIDE) || $this->hasAccessor($fieldName)) {
-            $componentName = $this->_table->getComponentName();
-
-            $accessor = $this->hasAccessor($fieldName)
-                ? $this->getAccessor($fieldName)
-                : 'get' . Doctrine_Inflector::classify($fieldName);
-
-            if ($this->hasAccessor($fieldName) || method_exists($this, $accessor)) {
+        if ($this->hasAccessor($fieldName)) {
+            $accessor = $this->getAccessor($fieldName);
+            return $this->$accessor($load, $fieldName);
+        }
+        if ( ! isset(self::$_noAutoAccessor[static::class][$fieldName])
+                && $this->_table->getAttribute(Doctrine_Core::ATTR_AUTO_ACCESSOR_OVERRIDE)) {
+            $accessor = 'get' . Doctrine_Inflector::classify($fieldName);
+            if (method_exists($this, $accessor)) {
                 $this->hasAccessor($fieldName, $accessor);
                 return $this->$accessor($load, $fieldName);
             }
+            self::$_noAutoAccessor[static::class][$fieldName] = true;
         }
         return $this->_get($fieldName, $load);
     }
@@ -1461,16 +1471,18 @@ abstract class Doctrine_Record extends Doctrine_Record_Abstract implements Count
      */
     public function set($fieldName, $value, $load = true)
     {
-        if ($this->_table->getAttribute(Doctrine_Core::ATTR_AUTO_ACCESSOR_OVERRIDE) || $this->hasMutator($fieldName)) {
-            $componentName = $this->_table->getComponentName();
-            $mutator = $this->hasMutator($fieldName)
-                ? $this->getMutator($fieldName):
-                'set' . Doctrine_Inflector::classify($fieldName);
-
-            if ($this->hasMutator($fieldName) || method_exists($this, $mutator)) {
+        if ($this->hasMutator($fieldName)) {
+            $mutator = $this->getMutator($fieldName);
+            return $this->$mutator($value, $load, $fieldName);
+        }
+        if ( ! isset(self::$_noAutoMutator[static::class][$fieldName])
+                && $this->_table->getAttribute(Doctrine_Core::ATTR_AUTO_ACCESSOR_OVERRIDE)) {
+            $mutator = 'set' . Doctrine_Inflector::classify($fieldName);
+            if (method_exists($this, $mutator)) {
                 $this->hasMutator($fieldName, $mutator);
                 return $this->$mutator($value, $load, $fieldName);
             }
+            self::$_noAutoMutator[static::class][$fieldName] = true;
         }
         return $this->_set($fieldName, $value, $load);
     }
