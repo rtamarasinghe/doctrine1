@@ -183,6 +183,14 @@ abstract class Doctrine_Record extends Doctrine_Record_Abstract implements Count
     protected static $_noAutoMutator = array();
 
     /**
+     * Class => whether it overrides none of get(), _get(), getData() and getIterator(), so toArray() may read
+     * fields without calling get() for each.
+     *
+     * @var array
+     */
+    private static $_plainFieldRead = array();
+
+    /**
      * Whether or not to serialize references when a Doctrine_Record is serialized
      *
      * @var boolean
@@ -1932,17 +1940,41 @@ abstract class Doctrine_Record extends Doctrine_Record_Abstract implements Count
 
         $a = array();
 
-        foreach ($this as $column => $value) {
-            if ($value === self::$_null || is_object($value)) {
-                $value = null;
+        $class = static::class;
+        if ( ! isset(self::$_plainFieldRead[$class])) {
+            $plain = true;
+            foreach (array('get', '_get', 'getData', 'getIterator') as $method) {
+                $plain = $plain && (new ReflectionMethod($class, $method))->getDeclaringClass()->getName() === __CLASS__;
             }
+            self::$_plainFieldRead[$class] = $plain;
+        }
 
-            $columnValue = $this->get($column, false);
+        if (self::$_plainFieldRead[$class]) {
+            // What get($column, false) returns for a field it has no accessor for; fields that may have one still
+            // go through get().
+            $componentName = $this->_table->getComponentName();
+            $autoAccessors = $this->_table->getAttribute(Doctrine_Core::ATTR_AUTO_ACCESSOR_OVERRIDE);
+            foreach ($this->_data as $column => $value) {
+                if ( ! empty(self::$_customAccessors[$componentName][$column])
+                        || ($autoAccessors && ! isset(self::$_noAutoAccessor[$class][$column]))) {
+                    $columnValue = $this->get($column, false);
+                } elseif (array_key_exists($column, $this->_values)) {
+                    $columnValue = $this->_values[$column];
+                } else {
+                    $columnValue = $value === self::$_null ? null : $value;
+                }
 
-            if ($columnValue instanceof Doctrine_Record) {
-                $a[$column] = $columnValue->getIncremented();
-            } else {
-                $a[$column] = $columnValue;
+                $a[$column] = $columnValue instanceof Doctrine_Record ? $columnValue->getIncremented() : $columnValue;
+            }
+        } else {
+            foreach ($this as $column => $value) {
+                $columnValue = $this->get($column, false);
+
+                if ($columnValue instanceof Doctrine_Record) {
+                    $a[$column] = $columnValue->getIncremented();
+                } else {
+                    $a[$column] = $columnValue;
+                }
             }
         }
 
