@@ -2208,6 +2208,24 @@ class Doctrine_Query extends Doctrine_Query_Abstract implements Countable
     }
 
     /**
+     * Before the first build, the root alias and its components come from callback discovery, which parses FROM
+     * alone when it can, instead of from a full build. The components stay set because getRoot() reads them; the
+     * next build replaces them.
+     *
+     * @return string
+     */
+    public function getRootAlias()
+    {
+        if ( ! $this->_queryComponents && $this->_type === self::SELECT && ! $this->isSubquery()) {
+            $this->_queryComponents = $this->_getDqlCallbackComponents();
+
+            return $this->_rootAlias;
+        }
+
+        return parent::getRootAlias();
+    }
+
+    /**
      * Callbacks need only the components a query declares, not its SQL. For a SELECT whose FROM part declares all
      * of them, parse FROM alone on the copy; otherwise build the whole statement as before.
      *
