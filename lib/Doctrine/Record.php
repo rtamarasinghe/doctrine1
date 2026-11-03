@@ -174,6 +174,23 @@ abstract class Doctrine_Record extends Doctrine_Record_Abstract implements Count
     protected static $_customMutators = array();
 
     /**
+     * Class => field name => true where ATTR_AUTO_ACCESSOR_OVERRIDE found no get<Field>() / set<Field>() method.
+     * Classes cannot gain methods, so a miss stays a miss; hits are kept in the custom accessor/mutator caches.
+     *
+     * @var array
+     */
+    protected static $_noAutoAccessor = array();
+    protected static $_noAutoMutator = array();
+
+    /**
+     * Class => whether it overrides none of get(), _get(), getData() and getIterator(), so toArray() may read
+     * fields without calling get() for each.
+     *
+     * @var array
+     */
+    private static $_plainFieldRead = array();
+
+    /**
      * Whether or not to serialize references when a Doctrine_Record is serialized
      *
      * @var boolean
@@ -1354,17 +1371,18 @@ abstract class Doctrine_Record extends Doctrine_Record_Abstract implements Count
      */
     public function get($fieldName, $load = true)
     {
-        if ($this->_table->getAttribute(Doctrine_Core::ATTR_AUTO_ACCESSOR_OVERRIDE) || $this->hasAccessor($fieldName)) {
-            $componentName = $this->_table->getComponentName();
-
-            $accessor = $this->hasAccessor($fieldName)
-                ? $this->getAccessor($fieldName)
-                : 'get' . Doctrine_Inflector::classify($fieldName);
-
-            if ($this->hasAccessor($fieldName) || method_exists($this, $accessor)) {
+        if ($this->hasAccessor($fieldName)) {
+            $accessor = $this->getAccessor($fieldName);
+            return $this->$accessor($load, $fieldName);
+        }
+        if ( ! isset(self::$_noAutoAccessor[static::class][$fieldName])
+                && $this->_table->getAttribute(Doctrine_Core::ATTR_AUTO_ACCESSOR_OVERRIDE)) {
+            $accessor = 'get' . Doctrine_Inflector::classify($fieldName);
+            if (method_exists($this, $accessor)) {
                 $this->hasAccessor($fieldName, $accessor);
                 return $this->$accessor($load, $fieldName);
             }
+            self::$_noAutoAccessor[static::class][$fieldName] = true;
         }
         return $this->_get($fieldName, $load);
     }
@@ -1461,16 +1479,18 @@ abstract class Doctrine_Record extends Doctrine_Record_Abstract implements Count
      */
     public function set($fieldName, $value, $load = true)
     {
-        if ($this->_table->getAttribute(Doctrine_Core::ATTR_AUTO_ACCESSOR_OVERRIDE) || $this->hasMutator($fieldName)) {
-            $componentName = $this->_table->getComponentName();
-            $mutator = $this->hasMutator($fieldName)
-                ? $this->getMutator($fieldName):
-                'set' . Doctrine_Inflector::classify($fieldName);
-
-            if ($this->hasMutator($fieldName) || method_exists($this, $mutator)) {
+        if ($this->hasMutator($fieldName)) {
+            $mutator = $this->getMutator($fieldName);
+            return $this->$mutator($value, $load, $fieldName);
+        }
+        if ( ! isset(self::$_noAutoMutator[static::class][$fieldName])
+                && $this->_table->getAttribute(Doctrine_Core::ATTR_AUTO_ACCESSOR_OVERRIDE)) {
+            $mutator = 'set' . Doctrine_Inflector::classify($fieldName);
+            if (method_exists($this, $mutator)) {
                 $this->hasMutator($fieldName, $mutator);
                 return $this->$mutator($value, $load, $fieldName);
             }
+            self::$_noAutoMutator[static::class][$fieldName] = true;
         }
         return $this->_set($fieldName, $value, $load);
     }
@@ -1920,17 +1940,41 @@ abstract class Doctrine_Record extends Doctrine_Record_Abstract implements Count
 
         $a = array();
 
-        foreach ($this as $column => $value) {
-            if ($value === self::$_null || is_object($value)) {
-                $value = null;
+        $class = static::class;
+        if ( ! isset(self::$_plainFieldRead[$class])) {
+            $plain = true;
+            foreach (array('get', '_get', 'getData', 'getIterator') as $method) {
+                $plain = $plain && (new ReflectionMethod($class, $method))->getDeclaringClass()->getName() === __CLASS__;
             }
+            self::$_plainFieldRead[$class] = $plain;
+        }
 
-            $columnValue = $this->get($column, false);
+        if (self::$_plainFieldRead[$class]) {
+            // What get($column, false) returns for a field it has no accessor for; fields that may have one still
+            // go through get().
+            $componentName = $this->_table->getComponentName();
+            $autoAccessors = $this->_table->getAttribute(Doctrine_Core::ATTR_AUTO_ACCESSOR_OVERRIDE);
+            foreach ($this->_data as $column => $value) {
+                if ( ! empty(self::$_customAccessors[$componentName][$column])
+                        || ($autoAccessors && ! isset(self::$_noAutoAccessor[$class][$column]))) {
+                    $columnValue = $this->get($column, false);
+                } elseif (array_key_exists($column, $this->_values)) {
+                    $columnValue = $this->_values[$column];
+                } else {
+                    $columnValue = $value === self::$_null ? null : $value;
+                }
 
-            if ($columnValue instanceof Doctrine_Record) {
-                $a[$column] = $columnValue->getIncremented();
-            } else {
-                $a[$column] = $columnValue;
+                $a[$column] = $columnValue instanceof Doctrine_Record ? $columnValue->getIncremented() : $columnValue;
+            }
+        } else {
+            foreach ($this as $column => $value) {
+                $columnValue = $this->get($column, false);
+
+                if ($columnValue instanceof Doctrine_Record) {
+                    $a[$column] = $columnValue->getIncremented();
+                } else {
+                    $a[$column] = $columnValue;
+                }
             }
         }
 
