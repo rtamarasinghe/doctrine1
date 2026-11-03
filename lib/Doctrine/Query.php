@@ -2208,9 +2208,9 @@ class Doctrine_Query extends Doctrine_Query_Abstract implements Countable
     }
 
     /**
-     * Before the first build, the root alias and its components come from callback discovery, which parses FROM
-     * alone when it can, instead of from a full build. The components stay set because getRoot() reads them; the
-     * next build replaces them.
+     * Before the first build, the root alias and its components come from callback discovery, which reads the query
+     * cache or parses FROM alone, instead of from a full build. The components stay set because getRoot() reads
+     * them; the next build replaces them.
      *
      * @return string
      */
@@ -2226,13 +2226,99 @@ class Doctrine_Query extends Doctrine_Query_Abstract implements Countable
     }
 
     /**
+     * With the query cache on, a top-level SELECT's components are cached as they stand before the callbacks run.
+     * The key must hold every input discovery reads: the DQL parts, pending join conditions, query class and
+     * connection.
+     *
+     * @param  array $params
+     * @return array $components
+     */
+    protected function _getDqlCallbackComponents($params = array())
+    {
+        if ($this->_type !== self::SELECT || $this->isSubquery() || $this->_queryCache === false
+                || ! ($this->_queryCache || $this->_conn->getAttribute(Doctrine_Core::ATTR_QUERY_CACHE))) {
+            return $this->_discoverDqlCallbackComponents($params);
+        }
+
+        $driver = $this->getQueryCacheDriver();
+        $hash = md5('dql_callback_components' . "\0" . get_class($this) . "\0" . $this->_conn->getName() . "\0"
+            . serialize($this->_dqlParts) . "\0" . serialize($this->_pendingJoinConditions));
+        $cached = $driver->fetch($hash);
+        if ($cached !== false) {
+            list($componentInfo, $this->_rootAlias) = unserialize($cached);
+
+            return $this->_componentsFromCachedForm($componentInfo);
+        }
+
+        $components = $this->_discoverDqlCallbackComponents($params);
+        $driver->save($hash, serialize(array($this->_componentsCachedForm($components), $this->_rootAlias)),
+            $this->getQueryCacheLifeSpan());
+
+        return $components;
+    }
+
+    /**
+     * Components by name, keeping each one's keys in order. A many-to-many 'ref' component's table is the
+     * association table and its parent is a path, not an alias, so tables are stored by their own name and
+     * relations by their owning table.
+     *
+     * @param  array $components
+     * @return array
+     */
+    protected function _componentsCachedForm(array $components)
+    {
+        $info = array();
+        foreach ($components as $alias => $component) {
+            foreach ($component as $key => $value) {
+                if ($key === 'table') {
+                    $value = $value->getComponentName();
+                } elseif ($key === 'relation') {
+                    $value = array($value['localTable']->getComponentName(), $value->getAlias());
+                }
+                $info[$alias][$key] = $value;
+            }
+        }
+
+        return $info;
+    }
+
+    /**
+     * @see _componentsCachedForm()
+     * @param  array $info
+     * @return array
+     */
+    protected function _componentsFromCachedForm(array $info)
+    {
+        $manager = Doctrine_Manager::getInstance();
+        $table = function ($name) use ($manager) {
+            $conn = ! $this->_passedConn && $manager->hasConnectionForComponent($name)
+                ? $manager->getConnectionForComponent($name) : $this->_conn;
+
+            return $conn->getTable($name);
+        };
+        $components = array();
+        foreach ($info as $alias => $component) {
+            foreach ($component as $key => $value) {
+                if ($key === 'table') {
+                    $value = $table($value);
+                } elseif ($key === 'relation') {
+                    $value = $table($value[0])->getRelation($value[1]);
+                }
+                $components[$alias][$key] = $value;
+            }
+        }
+
+        return $components;
+    }
+
+    /**
      * Callbacks need only the components a query declares, not its SQL. For a SELECT whose FROM part declares all
      * of them, parse FROM alone on the copy; otherwise build the whole statement as before.
      *
      * @param  array $params
      * @return array $components
      */
-    protected function _getDqlCallbackComponents($params = array())
+    protected function _discoverDqlCallbackComponents($params = array())
     {
         if ($this->_type !== self::SELECT) {
             return parent::_getDqlCallbackComponents($params);
